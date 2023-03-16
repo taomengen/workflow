@@ -1222,8 +1222,8 @@ int KafkaMessage::parse_message_set(void **buf, size_t *size,
 			record->timestamp = timestamp;
 			record->offset = offset;
 			record->toppar = toppar->get_raw_ptr();
-			record->key_is_move = 1;
-			record->value_is_move = 1;
+			record->key_is_moved = 1;
+			record->value_is_moved = 1;
 			record->value = payload;
 			record->value_len = payload_len;
 			list_add_tail(kafka_record->get_list(), record_list);
@@ -1375,8 +1375,8 @@ int KafkaMessage::parse_message_record(void **buf, size_t *size,
 			return -1;
 		}
 
-		header->key_is_move = 1;
-		header->value_is_move = 1;
+		header->key_is_moved = 1;
+		header->value_is_moved = 1;
 
 		list_add_tail(&header->list, &record->header_list);
 	}
@@ -1474,8 +1474,8 @@ int KafkaMessage::parse_record_batch(void **buf, size_t *size,
 		KafkaRecord *record = new KafkaRecord;
 		record->set_offset(hdr.base_offset);
 		record->set_timestamp(hdr.base_timestamp);
-		record->get_raw_ptr()->key_is_move = 1;
-		record->get_raw_ptr()->value_is_move = 1;
+		record->get_raw_ptr()->key_is_moved = 1;
+		record->get_raw_ptr()->value_is_moved = 1;
 		record->get_raw_ptr()->toppar = toppar->get_raw_ptr();
 
 		switch (parse_message_record(&p, &n, record->get_raw_ptr()))
@@ -1701,23 +1701,62 @@ int KafkaMessage::encode_message(int api_type, struct iovec vectors[], int max)
 	return it->second(vectors, max);
 }
 
-static int kafka_get_api_version(const kafka_api_t *api, const KafkaConfig& conf,
-								 int api_type, int mvers, int message_version)
+static int kafka_api_get_max_ver(int api_type)
 {
-	int min_vers = 0;
+	switch (api_type)
+	{
+	case Kafka_Metadata:
+		return 4;
+	case Kafka_Produce:
+		return 7;
+	case Kafka_Fetch:
+		return 11;
+	case Kafka_FindCoordinator:
+		return 2;
+	case Kafka_JoinGroup:
+		return 5;
+	case Kafka_SyncGroup:
+		return 3;
+	case Kafka_Heartbeat:
+		return 3;
+	case Kafka_OffsetFetch:
+		return 1;
+	case Kafka_OffsetCommit:
+		return 7;
+	case Kafka_ListOffsets:
+		return 1;
+	case Kafka_LeaveGroup:
+		return 1;
+	case Kafka_ApiVersions:
+		return 0;
+	case Kafka_SaslHandshake:
+		return 1;
+	case Kafka_SaslAuthenticate:
+		return 0;
+	case Kafka_DescribeGroups:
+		return 0;
+	default:
+		return 0;
+	}
+}
+
+static int kafka_get_api_version(const kafka_api_t *api, const KafkaConfig& conf,
+								 int api_type, int max_ver, int message_version)
+{
+	int min_ver = 0;
 
 	if (api_type == Kafka_Produce)
 	{
 		if (message_version == 2)
-			min_vers = 3;
+			min_ver = 3;
 		else if (message_version == 1)
-			min_vers = 1;
+			min_ver = 1;
 
 		if (conf.get_compress_type() == Kafka_Zstd)
-			min_vers = 7;
+			min_ver = 7;
 	}
 
-	return kafka_broker_get_api_version(api, api_type, min_vers, mvers);
+	return kafka_broker_get_api_version(api, api_type, min_ver, max_ver);
 }
 
 int KafkaMessage::encode_head()
@@ -1726,6 +1765,8 @@ int KafkaMessage::encode_head()
 		this->api_version = 0;
 	else
 	{
+		int max_ver = kafka_api_get_max_ver(this->api_type);
+
 		if (this->api->features & KAFKA_FEATURE_MSGVER2)
 			this->message_version = 2;
 		else if (this->api->features & KAFKA_FEATURE_MSGVER1)
@@ -1745,10 +1786,8 @@ int KafkaMessage::encode_head()
 			this->config.set_compress_type(Kafka_NoCompress);
 		}
 
-		int mver = this->api_mver_map[this->api_type];
-
 		this->api_version = kafka_get_api_version(this->api, this->config,
-												  this->api_type, mver,
+												  this->api_type, max_ver,
 												  this->message_version);
 	}
 
@@ -2065,22 +2104,6 @@ KafkaRequest::KafkaRequest()
 	this->encode_func_map[Kafka_ApiVersions] = std::bind(&KafkaRequest::encode_apiversions, this, _1, _2);
 	this->encode_func_map[Kafka_SaslHandshake] = std::bind(&KafkaRequest::encode_saslhandshake, this, _1, _2);
 	this->encode_func_map[Kafka_SaslAuthenticate] = std::bind(&KafkaRequest::encode_saslauthenticate, this, _1, _2);
-
-	this->api_mver_map[Kafka_Metadata] = 4;
-	this->api_mver_map[Kafka_Produce] = 7;
-	this->api_mver_map[Kafka_Fetch] = 11;
-	this->api_mver_map[Kafka_FindCoordinator] = 2;
-	this->api_mver_map[Kafka_JoinGroup] = 5;
-	this->api_mver_map[Kafka_SyncGroup] = 3;
-	this->api_mver_map[Kafka_Heartbeat] = 3;
-	this->api_mver_map[Kafka_OffsetFetch] = 1;
-	this->api_mver_map[Kafka_OffsetCommit] = 7;
-	this->api_mver_map[Kafka_ListOffsets] = 1;
-	this->api_mver_map[Kafka_LeaveGroup] = 1;
-	this->api_mver_map[Kafka_ApiVersions] = 0;
-	this->api_mver_map[Kafka_SaslHandshake] = 1;
-	this->api_mver_map[Kafka_SaslAuthenticate] = 0;
-	this->api_mver_map[Kafka_DescribeGroups] = 0;
 }
 
 int KafkaRequest::encode_produce(struct iovec vectors[], int max)
@@ -2874,35 +2897,29 @@ static int kafka_meta_parse_broker(void **buf, size_t *size,
 static bool kafka_broker_get_leader(int leader_id, KafkaBrokerList *broker_list,
 									kafka_broker_t *leader)
 {
-	broker_list->rewind();
 	KafkaBroker *bbroker;
 
+	broker_list->rewind();
 	while ((bbroker = broker_list->get_next()) != NULL)
 	{
 		if (bbroker->get_node_id() == leader_id)
 		{
 			kafka_broker_t *broker = bbroker->get_raw_ptr();
-			kafka_broker_deinit(leader);
-			leader->node_id = broker->node_id;
-			leader->port = broker->port;
 
 			char *host = strdup(broker->host);
 			if (host)
 			{
-				char *rack;
+				char *rack = NULL;
 
 				if (broker->rack)
 					rack = strdup(broker->rack);
 
 				if (!broker->rack || rack)
 				{
-					if (broker->rack)
-						leader->rack = rack;
-
-					leader->to_addr = broker->to_addr;
-					memcpy(&leader->addr, &broker->addr, sizeof(struct sockaddr_storage));
-					leader->addrlen = broker->addrlen;
+					kafka_broker_deinit(leader);
+					*leader = *broker;
 					leader->host = host;
+					leader->rack = rack;
 					return true;
 				}
 
@@ -3025,6 +3042,7 @@ static int kafka_meta_parse_topic(void **buf, size_t *size,
 								  KafkaMetaList *meta_list,
 								  KafkaBrokerList *broker_list)
 {
+	KafkaMetaList lst;
 	int32_t topic_cnt;
 	CHECK_RET(parse_i32(buf, size, &topic_cnt));
 
@@ -3045,15 +3063,21 @@ static int kafka_meta_parse_topic(void **buf, size_t *size,
 		if (!meta)
 			return -1;
 
-		kafka_meta_t *ptr = meta->get_raw_ptr();
+		KafkaMeta new_mta;
+		new_mta.set_topic(topic_name);
+
+		kafka_meta_t *ptr = new_mta.get_raw_ptr();
 		ptr->error = error;
 
 		if (api_version >= 1)
 			CHECK_RET(parse_i8(buf, size, &ptr->is_internal));
 
-		CHECK_RET(kafka_meta_parse_partition(buf, size, meta, broker_list));
+		CHECK_RET(kafka_meta_parse_partition(buf, size, &new_mta, broker_list));
+
+		lst.add_item(std::move(new_mta));
 	}
 
+	*meta_list = std::move(lst);
 	return 0;
 }
 
@@ -3818,7 +3842,7 @@ int KafkaResponse::handle_sasl_continue()
 		if (ret != (int)iovecs[i].iov_len)
 		{
 			if (ret >= 0)
-				errno = EAGAIN;
+				errno = ENOBUFS;
 			return -1;
 		}
 	}
